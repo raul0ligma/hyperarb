@@ -601,7 +601,7 @@ impl ArbitrageExecutor {
                         Self::offload_position(
                             client,
                             actual_received,
-                            original_params.sell_asset_id,
+                            original_params.buy_asset_id,
                             false,
                             original_params.sell_price,
                         )
