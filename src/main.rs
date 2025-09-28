@@ -521,7 +521,7 @@ impl ArbitrageExecutor {
                         } else {
                             // Calculate expected sell amount from actual buy
                             let expected_sell_size = buy_size * (1.0 - TAKER_FEE_RATE);
-                            let remaining = expected_sell_size - sell_size;
+                            let remaining: f64 = expected_sell_size - sell_size;
 
                             // Only offload if remaining is significant (avoid dust)
                             // size should be greater than $10 to offload
@@ -530,9 +530,9 @@ impl ArbitrageExecutor {
                                 Self::offload_position(
                                     client,
                                     remaining,
-                                    original_params.sell_asset_id,
+                                    original_params.buy_asset_id,
                                     false,
-                                    original_params.sell_price,
+                                    original_params.buy_price,
                                 )
                                 .await?;
                             } else {
@@ -633,9 +633,9 @@ impl ArbitrageExecutor {
     ) -> Result<()> {
         // Apply slippage: buy higher, sell lower for guaranteed execution
         let slippage_price = if is_buy {
-            original_price * 1.01 // 1% higher for offload buy
+            original_price * 1.02 // 1% higher for offload buy
         } else {
-            original_price * 0.99 // 1% lower for offload sell
+            original_price * 0.98 // 1% lower for offload sell
         };
 
         let offload_order = BulkOrder {
