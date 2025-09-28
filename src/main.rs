@@ -21,8 +21,6 @@ const TAKER_FEE_RATE: f64 = 0.000672; // 0.0672%
 const HYPE_USDH_ASSET_ID: u32 = 232; // @232
 const HYPE_USDC_ASSET_ID: u32 = 107; // @107
 
-const MIN_PROFIT_USD: f64 = 0.0003;
-
 // Asset metadata from Hyperliquid
 const HYPE_SZ_DECIMALS: i32 = 2;
 const USDH_SZ_DECIMALS: i32 = 2;
@@ -78,6 +76,8 @@ pub struct Config {
     pub user_address: String,
     #[envconfig(from = "FIXED_ORDER_SIZE")]
     pub order_sz: f64,
+    #[envconfig(from = "MIN_PROFIT_USD")]
+    pub min_profit: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -274,10 +274,11 @@ pub struct ArbitrageExecutor {
     is_executing: Arc<Mutex<bool>>, // Change to Mutex
     // CHANGED: Wrapped in Arc for cloning
     order_sz: f64,
+    min_profit: f64,
 }
 
 impl ArbitrageExecutor {
-    pub fn new(client: HyperliquidClient, sz: f64) -> Self {
+    pub fn new(client: HyperliquidClient, sz: f64, min_profit: f64) -> Self {
         Self {
             client: Arc::new(client), // CHANGED: Wrap client in Arc
             balances: BalanceState {
@@ -286,6 +287,7 @@ impl ArbitrageExecutor {
                 hype: 0.0,
             },
             store: [0.0; 8],
+            min_profit,
             order_sz: sz,
             is_executing: Arc::new(Mutex::new(false)), // CHANGED: Wrapped in Arc
         }
@@ -358,7 +360,7 @@ impl ArbitrageExecutor {
         let profit_2 = ((usdc_bid - usdh_ask) * sz_usdh) - (self.order_sz * TAKER_FEE_RATE * 2.0);
 
         // Check minimum profit threshold
-        if profit_1 > MIN_PROFIT_USD && profit_1 > profit_2 {
+        if profit_1 >= self.min_profit && profit_1 > profit_2 {
             // Adjust sell size for what you actually receive after buy fee
             let sell_sz = sz_usdc * (1.0 - TAKER_FEE_RATE);
             return Ok(Some(TradeParams {
@@ -372,7 +374,7 @@ impl ArbitrageExecutor {
             }));
         }
 
-        if profit_2 > MIN_PROFIT_USD {
+        if profit_2 >= self.min_profit {
             // Adjust sell size for what you actually receive after buy fee
             let sell_sz = sz_usdh * (1.0 - TAKER_FEE_RATE);
             return Ok(Some(TradeParams {
@@ -676,7 +678,7 @@ async fn main() -> Result<()> {
     let executor = HyperliquidClient::new(Network::Mainnet, signer, user_address);
 
     // Create arbitrage executor
-    let arbitrage_executor = ArbitrageExecutor::new(executor, config.order_sz);
+    let arbitrage_executor = ArbitrageExecutor::new(executor, config.order_sz, config.min_profit);
 
     // Create WebSocket client with arbitrage executor
     let hype_usdh = 232;
