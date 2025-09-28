@@ -3066,6 +3066,8 @@ dependencies = [
 name = "hyperarb"
 version = "0.1.0"
 dependencies = [
+ "alloy",
+ "anyhow",
  "envconfig",
  "futures-util",
  "hyperqit",
