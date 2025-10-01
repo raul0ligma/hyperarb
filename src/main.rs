@@ -3,11 +3,9 @@ use anyhow::Result;
 use envconfig::Envconfig;
 use futures_util::{SinkExt, StreamExt};
 use hyperqit::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
@@ -217,7 +215,7 @@ impl HyperliquidWsClient {
         let offset: usize = if bbo.coin == "@232" { 0 } else { 4 };
 
         if let (Some(best_bid), Some(best_ask)) = (&bbo.bbo[0], &bbo.bbo[1]) {
-            self.store[offset + 0] = best_bid.sz.parse().unwrap();
+            self.store[offset] = best_bid.sz.parse().unwrap();
             self.store[offset + 1] = best_bid.px.parse().unwrap();
             self.store[offset + 2] = best_ask.sz.parse().unwrap();
             self.store[offset + 3] = best_ask.px.parse().unwrap();
