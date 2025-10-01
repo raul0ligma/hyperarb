@@ -13,15 +13,12 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-// WebSocket URL
 const WS_URL: &str = "wss://api.hyperliquid.xyz/ws";
 
-// Constants
 const TAKER_FEE_RATE: f64 = 0.000672; // 0.0672%
 const HYPE_USDH_ASSET_ID: u32 = 232; // @232
 const HYPE_USDC_ASSET_ID: u32 = 107; // @107
 
-// Asset metadata from Hyperliquid
 const HYPE_SZ_DECIMALS: i32 = 2;
 const USDH_SZ_DECIMALS: i32 = 2;
 
@@ -82,17 +79,15 @@ pub struct Config {
 
 #[derive(Debug, Clone)]
 struct TradeParams {
-    // Buy side (cheaper exchange)
     buy_asset_id: u32,
     buy_price: f64,
-    buy_size: f64, // Exact HYPE amount to buy
+    buy_size: f64,
 
-    // Sell side (expensive exchange)
     sell_asset_id: u32,
     sell_price: f64,
-    sell_size: f64, // Exact HYPE amount to sell (after fees)
+    sell_size: f64, // exact HYPE amount to sell (after fees)
 
-    // Expected results
+    // check for min profit out
     expected_profit_usd: f64,
 }
 
@@ -145,7 +140,6 @@ impl HyperliquidWsClient {
 
         let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-        // Subscribe to BBO for price feeds
         for coin in &self.coins {
             let bbo_subscription = json!({
                 "method": "subscribe",
@@ -160,7 +154,6 @@ impl HyperliquidWsClient {
             println!("Subscribed to BBO for coin: {}", coin);
         }
 
-        // Subscribe to clearing house state for balances
         let clearing_house_subscription = json!({
             "method": "subscribe",
             "subscription": {
@@ -199,13 +192,11 @@ impl HyperliquidWsClient {
                 println!("Subscription confirmed");
             }
             "bbo" => {
-                // Always update prices first (never blocks)
+                // always update prices and data first, non-blocking
                 self.handle_bbo_update(response.data).await?;
-
-                // Update arbitrage executor with latest prices
                 self.arbitrage_executor.update_prices(self.store);
 
-                // CHANGED: Now async execution but still non-blocking WebSocket
+                // offload the executor into a diff task, and continue updated book head and prices
                 let executor = self.arbitrage_executor.clone();
                 tokio::spawn(async move {
                     let _ = executor.try_execute_arbitrage().await;
@@ -258,7 +249,6 @@ impl HyperliquidWsClient {
                 }
             }
 
-            // Update arbitrage executor balances
             self.arbitrage_executor.update_balances(usdc, usdh, hype);
         }
 
@@ -268,11 +258,10 @@ impl HyperliquidWsClient {
 
 #[derive(Clone)]
 pub struct ArbitrageExecutor {
-    client: Arc<HyperliquidClient>, // CHANGED: Wrapped in Arc for cloning
+    client: Arc<HyperliquidClient>,
     balances: BalanceState,
-    store: [f64; 8],                // Price store from WebSocket
-    is_executing: Arc<Mutex<bool>>, // Change to Mutex
-    // CHANGED: Wrapped in Arc for cloning
+    store: [f64; 8],
+    is_executing: Arc<Mutex<bool>>,
     order_sz: f64,
     min_profit: f64,
 }
@@ -316,7 +305,6 @@ impl ArbitrageExecutor {
         Ok((usdh_bid, usdh_ask, usdc_bid, usdc_ask))
     }
 
-    // CHANGED: Added dynamic sizing function
     fn has_sufficient_liquidity(&self, sz: f64) -> bool {
         let usdh_bid_size = self.store[0]; // @232 bid size
         let usdh_ask_size = self.store[2]; // @232 ask size  
@@ -329,22 +317,22 @@ impl ArbitrageExecutor {
                 Err(_) => return false,
             };
 
-        // Calculate required HYPE amounts for 2x our trade size
+        // calculate required HYPE amounts for 2x our trade size
         let required_usdh_bid_hype = (sz * 2.0) / usdh_bid_price;
         let required_usdh_ask_hype = (sz * 2.0) / usdh_ask_price;
         let required_usdc_bid_hype = (sz * 2.0) / usdc_bid_price;
         let required_usdc_ask_hype = (sz * 2.0) / usdc_ask_price;
 
-        // All 4 levels must have at least 2x our trade amount
+        // all 4 levels must have at least 2x our trade amount, to avoid IOC rejection even
+        // if someone takes it before us
         usdh_bid_size >= required_usdh_bid_hype
             && usdh_ask_size >= required_usdh_ask_hype
             && usdc_bid_size >= required_usdc_bid_hype
             && usdc_ask_size >= required_usdc_ask_hype
     }
 
-    // CHANGED: Keep original formula, just add dynamic sizing
     pub fn check_arbitrage_opportunity(&self) -> Result<Option<TradeParams>> {
-        // First check if all levels have sufficient liquidity
+        // first check if all levels have sufficient liquidity
         if !self.has_sufficient_liquidity(self.order_sz) {
             return Ok(None);
         }
@@ -359,9 +347,9 @@ impl ArbitrageExecutor {
         let sz_usdh = self.order_sz / usdh_ask;
         let profit_2 = ((usdc_bid - usdh_ask) * sz_usdh) - (self.order_sz * TAKER_FEE_RATE * 2.0);
 
-        // Check minimum profit threshold
+        // check minimum profit threshold
         if profit_1 >= self.min_profit && profit_1 > profit_2 {
-            // Adjust sell size for what you actually receive after buy fee
+            // adjust sell size for what you actually receive after buy fee
             let sell_sz = sz_usdc * (1.0 - TAKER_FEE_RATE);
             return Ok(Some(TradeParams {
                 buy_asset_id: HYPE_USDC_ASSET_ID,
@@ -375,7 +363,7 @@ impl ArbitrageExecutor {
         }
 
         if profit_2 >= self.min_profit {
-            // Adjust sell size for what you actually receive after buy fee
+            // adjust sell size for what you actually receive after buy fee
             let sell_sz = sz_usdh * (1.0 - TAKER_FEE_RATE);
             return Ok(Some(TradeParams {
                 buy_asset_id: HYPE_USDH_ASSET_ID,
@@ -411,14 +399,13 @@ impl ArbitrageExecutor {
         Ok(())
     }
 
-    // CHANGED: Completely rewritten for non-blocking execution
     pub async fn try_execute_arbitrage(&self) -> Result<()> {
         let _guard = match self.is_executing.try_lock() {
             Ok(guard) => guard,
-            Err(_) => return Ok(()), // Already executing
+            Err(_) => return Ok(()), // already executing, ignore
         };
 
-        // All validation and execution while holding lock
+        // hold the lock and run
         let opportunity = match self.check_arbitrage_opportunity() {
             Ok(Some(opp)) => opp,
             _ => return Ok(()),
@@ -428,13 +415,11 @@ impl ArbitrageExecutor {
             return Ok(());
         }
 
-        // Execute synchronously while holding lock
         Self::execute_trade_async(self.client.clone(), opportunity).await?;
 
         Ok(())
     }
 
-    // CHANGED: New static method for async execution
     async fn execute_trade_async(
         client: Arc<HyperliquidClient>,
         trade_params: TradeParams,
@@ -453,7 +438,6 @@ impl ArbitrageExecutor {
         Self::handle_execution_result(client, result, &trade_params).await
     }
 
-    // CHANGED: Static version of create_bulk_order
     fn create_bulk_order_static(trade_params: &TradeParams) -> Result<BulkOrder> {
         let orders = vec![
             OrderRequest {
@@ -482,7 +466,6 @@ impl ArbitrageExecutor {
         })
     }
 
-    // CHANGED: Comprehensive exit handling with floating point precision fixes
     async fn handle_execution_result(
         client: Arc<HyperliquidClient>,
         result: ExchangeOrderResponse,
@@ -514,18 +497,18 @@ impl ArbitrageExecutor {
 
                 match (buy_filled, sell_filled) {
                     (Some(buy_size), Some(sell_size)) => {
-                        // Both filled, check if complete or partial with floating point tolerance
+                        // both filled, check if complete or partial with floating point tolerance
                         let buy_complete = (buy_size - original_params.buy_size).abs() < 0.0001;
                         let sell_complete = (sell_size - original_params.sell_size).abs() < 0.0001;
 
                         if buy_complete && sell_complete {
                             info!("Complete arbitrage success");
                         } else {
-                            // Calculate expected sell amount from actual buy
+                            // calculate expected sell amount from actual buy
                             let expected_sell_size = buy_size * (1.0 - TAKER_FEE_RATE);
                             let remaining: f64 = expected_sell_size - sell_size;
 
-                            // Only offload if remaining is significant (avoid dust)
+                            // only offload if remaining is significant (avoid dust)
                             // size should be greater than $10 to offload
                             if remaining * original_params.sell_price > 10.5 {
                                 warn!("Partial sell, offloading remaining: {:.4} HYPE", remaining);
@@ -559,10 +542,10 @@ impl ArbitrageExecutor {
                                 let target_each = total_stable / 2.0;
 
                                 let (is_buy_usdh, amount_to_trade) = if usdc_bal > usdh_bal {
-                                    // Have excess USDC, need to buy USDH
+                                    // have excess USDC, need to buy USDH
                                     (true, (usdc_bal - target_each))
                                 } else {
-                                    // Have excess USDH, need to sell USDH for USDC
+                                    // have excess USDH, need to sell USDH for USDC
                                     (false, (usdh_bal - target_each))
                                 };
 
@@ -594,7 +577,7 @@ impl ArbitrageExecutor {
                         }
                     }
                     (Some(buy_size), None) => {
-                        // Buy filled, sell failed - offload full received amount
+                        // buy filled, sell failed, offload full received amount
                         let actual_received = buy_size * (1.0 - TAKER_FEE_RATE);
                         warn!(
                             "Buy filled, sell failed - offloading: {:.4} HYPE",
@@ -625,7 +608,6 @@ impl ArbitrageExecutor {
         Ok(())
     }
 
-    // CHANGED: Renamed from emergency_order to offload_position with precision handling
     async fn offload_position(
         client: Arc<HyperliquidClient>,
         size: f64,
@@ -633,11 +615,12 @@ impl ArbitrageExecutor {
         is_buy: bool,
         original_price: f64,
     ) -> Result<()> {
-        // Apply slippage: buy higher, sell lower for guaranteed execution
+        // optimistically offload without partiall fills
+        // use higher slippage, we might loose a lot here if slippage hits and we also pay fees
         let slippage_price = if is_buy {
-            original_price * 1.02 // 1% higher for offload buy
+            original_price * 1.02
         } else {
-            original_price * 0.98 // 1% lower for offload sell
+            original_price * 0.98
         };
 
         let offload_order = BulkOrder {
@@ -677,10 +660,8 @@ async fn main() -> Result<()> {
     let user_address: Address = config.user_address.parse().unwrap();
     let executor = HyperliquidClient::new(Network::Mainnet, signer, user_address);
 
-    // Create arbitrage executor
     let arbitrage_executor = ArbitrageExecutor::new(executor, config.order_sz, config.min_profit);
 
-    // Create WebSocket client with arbitrage executor
     let hype_usdh = 232;
     let hype_usdc = 107;
     let coins = vec![format!("@{}", hype_usdh), format!("@{}", hype_usdc)];
